@@ -21,7 +21,7 @@ This folder is a reference implementation. The skill is just two files (`SKILL.m
 
 - [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code/setup)
-- A Memori Cloud account with an API key and entity ID
+- A Memori Cloud account with an API key, entity ID, and project ID
 
 ## Install
 
@@ -30,12 +30,16 @@ This folder is a reference implementation. The skill is just two files (`SKILL.m
 
 ## Configuration
 
-Set these environment variables before launching Claude Code:
+Copy `.env.example` to `.env` and fill in your values:
 
 ```bash
-export MEMORI_API_KEY=your_memori_api_key
-export MEMORI_ENTITY_ID=your_entity_id
-export MEMORI_PROJECT_ID=your_default_project_id   # optional
+cp .env.example .env
+```
+
+```bash
+MEMORI_API_KEY=your_memori_api_key
+MEMORI_ENTITY_ID=your_entity_id
+MEMORI_PROJECT_ID=your_default_project_id
 ```
 
 Put them in your shell profile, a tool like `direnv`, or a project-local `.env` file. If you use `.env`, invoke the CLI with `bun --env-file=.env ...` (Claude Code itself does not auto-load `.env`).
@@ -44,7 +48,7 @@ Put them in your shell profile, a tool like `direnv`, or a project-local `.env` 
 |---|---|---|
 | `MEMORI_API_KEY` | yes | Authenticates to Memori Cloud |
 | `MEMORI_ENTITY_ID` | yes | Per-user / per-agent memory namespace |
-| `MEMORI_PROJECT_ID` | no | Default project scope; can be overridden per call with `--projectId` |
+| `MEMORI_PROJECT_ID` | yes | Default project scope; can be overridden per call with `--projectId` |
 
 ## How the skill is used
 
@@ -91,7 +95,7 @@ Each entry requires `name` (string), `args` (object), and `result` (any — key 
 ## Troubleshooting
 
 - **`MEMORI_API_KEY is required`** — credentials not in the environment. Export the variables in your shell or invoke the CLI with `bun --env-file=.env ...`.
-- **`--sessionId requires --projectId or MEMORI_PROJECT_ID`** — set `MEMORI_PROJECT_ID` or pass `--projectId`.
+- **`MEMORI_PROJECT_ID is required (set in .env or pass --projectId)`** — set `MEMORI_PROJECT_ID` in `.env` or pass `--projectId` on the command.
 - **Claude prompts on every Bash call** — confirm `Bash(bun *)` and `Skill(memori)` are in your `settings.local.json` / `settings.json`.
 - **Skill never fires** — confirm Claude Code can see it: `claude` → `/skills` should list `memori`.
 
