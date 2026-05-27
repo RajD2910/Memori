@@ -19,6 +19,7 @@ from typing import Any
 
 import requests
 
+from memori._embedding_input import is_embeddable_text, normalize_embed_texts_input
 from memori.memory._struct import SemanticTriple
 from memori.storage._connection import connection_context
 
@@ -121,10 +122,88 @@ _ORT_ASSET_BY_PLATFORM: dict[tuple[str, str], tuple[str, str]] = {
 }
 
 
-def embed_texts(*args: Any, **kwargs: Any) -> Any:
-    from memori.embeddings import embed_texts as embed_texts_impl
+_NATIVE_EMBEDDER_CACHE: dict[str | None, Any] = {}
+_NATIVE_EMBEDDER_LOCK = threading.Lock()
 
-    return embed_texts_impl(*args, **kwargs)
+
+def _embed_with_native_cache(
+    inputs: list[str], model: str | None = None
+) -> list[list[float]]:
+    model_name = _normalize_model_name(model)
+    with _NATIVE_EMBEDDER_LOCK:
+        engine = _NATIVE_EMBEDDER_CACHE.get(model_name)
+        if engine is None:
+            _try_import_memori_python()
+            try:
+                from memori_python import (  # ty: ignore[unresolved-import]
+                    NativeEmbedder,
+                )
+            except ImportError as exc:
+                raise RustCoreAdapterError("Rust embeddings are unavailable") from exc
+            engine = NativeEmbedder(model_name)
+            _NATIVE_EMBEDDER_CACHE[model_name] = engine
+
+    return [list(row) for row in engine.embed_texts(inputs)]
+
+
+def _embed_texts_with_cardinality(
+    texts: str | list[str],
+    embed_fn: Any,
+) -> list[list[float]]:
+    originals = normalize_embed_texts_input(texts)
+    if not originals:
+        return []
+
+    embeddable = [text for text in originals if is_embeddable_text(text)]
+    if not embeddable:
+        return [[] for _ in originals]
+
+    embedded = embed_fn(embeddable)
+    if len(embedded) != len(embeddable):
+        raise RustCoreAdapterError(
+            "Native embedder returned "
+            f"{len(embedded)} vectors for {len(embeddable)} embeddable inputs"
+        )
+
+    result: list[list[float]] = [[] for _ in originals]
+    embed_index = 0
+    for index, text in enumerate(originals):
+        if not is_embeddable_text(text):
+            continue
+        result[index] = embedded[embed_index]
+        embed_index += 1
+    return result
+
+
+def embed_texts(texts: str | list[str], model: str | None = None) -> list[list[float]]:
+    return _embed_texts_with_cardinality(
+        texts,
+        lambda embeddable: _embed_with_native_cache(embeddable, model),
+    )
+
+
+def _embed_entity_facts(
+    config: Any, facts_str: list[str], model: str | None
+) -> list[list[float]] | None:
+    rust_core = getattr(config, "rust_core", None)
+    embed_fn = getattr(rust_core, "embed_texts", None)
+    if callable(embed_fn):
+        try:
+            return embed_fn(facts_str, model=model)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to embed AA facts with rust core before write; "
+                "falling back without embeddings"
+            )
+            return None
+
+    try:
+        return embed_texts(facts_str, model=model)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Failed to embed AA facts before write; falling back without embeddings"
+        )
+        return None
 
 
 def _current_platform_system() -> str:
@@ -542,6 +621,19 @@ class RustCoreAdapter:
                 raise
             return self._engine
 
+    def embed_texts(
+        self, texts: str | list[str], model: str | None = None
+    ) -> list[list[float]]:
+        engine = self._engine
+        if engine is not None:
+            return _embed_texts_with_cardinality(
+                texts,
+                lambda embeddable: [
+                    list(row) for row in engine.embed_texts(embeddable)
+                ],
+            )
+        return embed_texts(texts, model=model)
+
     def retrieve_facts(
         self,
         *,
@@ -802,6 +894,26 @@ def _normalize_embedding_row(fact_id: Any, embedding: Any) -> dict[str, Any] | N
     return None
 
 
+def _normalize_fact_embeddings(
+    value: Any, expected_count: int
+) -> list[list[float]] | None:
+    if not isinstance(value, list) or len(value) != expected_count:
+        return None
+
+    embeddings: list[list[float]] = []
+    for row in value:
+        if not isinstance(row, (list, tuple)):
+            return None
+        if not row:
+            embeddings.append([])
+            continue
+        try:
+            embeddings.append([float(item) for item in row])
+        except (TypeError, ValueError):
+            return None
+    return embeddings
+
+
 def _coerce_driver_id(driver: Any | None, value: Any) -> Any:
     if _is_mongodb_driver(driver):
         object_id = _to_mongodb_object_id(value)
@@ -878,17 +990,15 @@ def _apply_write_op(
             return False
         conversation_id = payload.get("conversation_id")
         conversation_id_driver_id = _to_optional_driver_id(driver, conversation_id)
-        embeddings: list[list[float]] | None = None
-        try:
+        embeddings = _normalize_fact_embeddings(
+            payload.get("fact_embeddings"), len(facts_str)
+        )
+        if embeddings is None:
             embeddings_model = getattr(
                 getattr(config, "embeddings", None), "model", None
             )
             if isinstance(embeddings_model, str) and embeddings_model:
-                embeddings = embed_texts(facts_str, model=embeddings_model)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Failed to embed AA facts before write; falling back without embeddings"
-            )
+                embeddings = _embed_entity_facts(config, facts_str, embeddings_model)
         driver.entity_fact.create(
             entity_id,
             facts_str,
