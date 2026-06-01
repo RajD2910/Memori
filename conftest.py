@@ -6,7 +6,8 @@ from memori.storage import Manager as StorageManager
 
 @pytest.fixture
 def mock_mysql_session(mocker):
-    session = mocker.MagicMock()
+    from sqlalchemy.orm import Session
+    session = mocker.MagicMock(spec=Session) 
     session.get_bind.return_value.dialect.name = "mysql"
     type(session).__module__ = "sqlalchemy.orm.session"
 
