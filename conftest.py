@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy.orm import Session
 
 from memori._config import Config
 from memori.storage import Manager as StorageManager
@@ -6,10 +7,10 @@ from memori.storage import Manager as StorageManager
 
 @pytest.fixture
 def mock_mysql_session(mocker):
-    from sqlalchemy.orm import Session
     session = mocker.MagicMock(spec=Session) 
     session.get_bind.return_value.dialect.name = "mysql"
     type(session).__module__ = "sqlalchemy.orm.session"
+    
 
     mock_result = mocker.MagicMock()
     mock_result.mappings.return_value.fetchone.return_value = {"1": 1}
@@ -21,7 +22,7 @@ def mock_mysql_session(mocker):
 
 @pytest.fixture
 def mock_postgres_session(mocker):
-    session = mocker.MagicMock()
+    session = mocker.MagicMock(spec=Session)
     session.get_bind.return_value.dialect.name = "postgresql"
     type(session).__module__ = "sqlalchemy.orm.session"
 
